@@ -153,6 +153,8 @@ for split in train dev test; do
   fi
 done
 
+# RNN Tagger
+
 # Step 4: Train truecaser on training data only
 echo "Step 4: Training truecaser on training data..."
 for lang in $src $tgt; do
