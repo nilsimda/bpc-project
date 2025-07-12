@@ -153,19 +153,78 @@ for split in train dev test; do
   fi
 done
 
+# STEP 1.b für Mnolingual Data
+MONO_HSB_FILE="/Users/sebi/bpc_dev/witaj_monolingual.hsb"
+
+MONO_HSB_TOKENIZED="$MOSES_DIR/mono.tok.hsb"
+
+#-> Normalize punctuation 
+$MOSES_SCRIPTS/tokenizer/normalize-punctuation.perl -l hsb < "$MONO_HSB_FILE" > "$MOSES_DIR/mono.norm.hsb"
+
+#-> Tokenize
+$MOSES_SCRIPTS/tokenizer/tokenizer.perl -a -l hsb < "$MOSES_DIR/mono.norm.hsb" > "$MONO_HSB_TOKENIZED"
+
 # RNN Tagger
+# Tagger for specially German as well 
+# Check for Parallel data 
+#Step 3.b:
+echo "Step3b: Applying RNNTagger for POS tagging..."
+
+OUTPUT_DIR="./output"
+RNNTAGGER_OUTPUT_DIR="$OUTPUT_DIR/output_rnntagger"
+RNN_GERMAN_SCRIPT="/Users/sebi/Desktop/RNNTagger/cmd/rnn-tagger-german.sh"
+RNN_UPPER_SORBIAN_SCRIPT="/Users/sebi/Desktop/RNNTagger/cmd/rnn-tagger-upper-sorbian.sh"
+mkdir -p "$RNNTAGGER_OUTPUT_DIR"
+
+for split in train dev test; do
+  echo "Processing POS tagging for $split split..."
+
+  for lang in $src $tgt; do
+    INPUT_FILE="$MOSES_DIR/${split}.tok.${lang}"
+    OUTPUT_FILE="$RNNTAGGER_OUTPUT_DIR/${split}.tagged.${lang}"
+
+    if [[ "$lang" == "de" ]]; then
+      echo "Tagging $split.$lang with RNNTagger ..."
+      "$RNN_GERMAN_SCRIPT" "$INPUT_FILE" > "$OUTPUT_FILE" \
+        || { echo "RNNTagger shell script failed for $split.$lang"; exit 1; }
+    
+    else
+      echo "Tagging $split.$lang with RNNTagger ..."
+      "$RNN_UPPER_SORBIAN_SCRIPT" "$INPUT_FILE" > "$OUTPUT_FILE" \
+        || { echo "RNNTagger failed for $split.$lang"; exit 1; }
+
+    fi
+  done
+
+  src_file="$RNNTAGGER_OUTPUT_DIR/${split}.tagged.${src}"
+  tgt_file="$RNNTAGGER_OUTPUT_DIR/${split}.tagged.${tgt}"
+
+  src_lines=$(wc -l < "$src_file")
+  tgt_lines=$(wc -l < "$tgt_file")
+
+  if [ "$src_lines" -ne "$tgt_lines" ]; then
+    echo "ERROR: Line mismatch in POS-tagged $split split! $src: $src_lines vs $tgt: $tgt_lines"
+    exit 1
+  else
+    echo "Line count check passed for $split: $src_lines lines"
+  fi
+  
+
+done
 
 # Step 4: Train truecaser on training data only
 echo "Step 4: Training truecaser on training data..."
 for lang in $src $tgt; do
-  $MOSES_SCRIPTS/recaser/train-truecaser.perl -model "$MOSES_DIR/truecase-model.$lang" -corpus "$MOSES_DIR/train.tok.$lang"
+  $MOSES_SCRIPTS/recaser/train-truecaser.perl -model "$MOSES_DIR/truecase-model.$lang" -corpus "$RNNTAGGER_OUTPUT_DIR/train.tagged.$lang"
+  #$MOSES_SCRIPTS/recaser/train-truecaser.perl -model "$MOSES_DIR/truecase-model.$lang" -corpus "$MOSES_DIR/train.tok.$lang"
 done
 
 # Step 5: Apply truecasing to all splits
 echo "Step 5: Applying truecasing to all splits..."
 for split in train dev test; do
   for lang in $src $tgt; do
-    $MOSES_SCRIPTS/recaser/truecase.perl -model "$MOSES_DIR/truecase-model.$lang" <"$MOSES_DIR/${split}.clean.$lang" >"$MOSES_DIR/${split}.$lang"
+    $MOSES_SCRIPTS/recaser/truecase.perl -model "$MOSES_DIR/truecase-model.$lang" <"$RNNTAGGER_OUTPUT_DIR/${split}.tagged.$lang" >"$MOSES_DIR/${split}.$lang"
+    #$MOSES_SCRIPTS/recaser/truecase.perl -model "$MOSES_DIR/truecase-model.$lang" <"$MOSES_DIR/${split}.clean.$lang" >"$MOSES_DIR/${split}.$lang"
   done
 done
 
@@ -184,13 +243,24 @@ if [[ "$USE_MORFESSOR" == "true" ]]; then
     if [ -f "$MORFESSOR_DIR/morfessor_model.$lang.bin" ]; then
       echo "Morfessor model for $lang already exists, skipping training..."
     else
-      echo "Training Morfessor model for $lang..."
-      morfessor-train \
-        -s "$MORFESSOR_DIR/morfessor_model.$lang.bin" \
-        -d ones \
-        "$MOSES_DIR/train.$lang"
+      if [ "$lang" == "hsb" ]; then
+        echo "Training Morfessor model for $lang (with monolingual data)..."
+        cat "$MOSES_DIR/train.tok.$lang" "$MONO_HSB_TOKENIZED" > "$MOSES_DIR/train_tok_plus_mono_tok.$lang"
+        echo "train_tok_plus_mono_tok.$lang created..."
+        morfessor-train \
+          -s "$MORFESSOR_DIR/morfessor_model.$lang.bin" \
+          -d ones \
+          "$MOSES_DIR/train_tok_plus_mono_tok.$lang"
+      else
+        echo "Training Morfessor model for $lang..."
+        morfessor-train \
+          -s "$MORFESSOR_DIR/morfessor_model.$lang.bin" \
+          -d ones \
+          "$MOSES_DIR/train.tok.$lang"
+      fi
     fi
   done
+#MAYBE CHANGE -d ones to -d full or -d poisson/flat
 
   # Check if Morfessor models were created successfully
   for lang in $src $tgt; do
